@@ -1,7 +1,7 @@
 name: Score Submission
 
 on:
-  pull_request:
+  pull_request_target:
     paths:
       - submissions/encrypted/**
     types:
@@ -21,6 +21,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 2
       
       - name: Set up Python
