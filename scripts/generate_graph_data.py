@@ -121,11 +121,15 @@ def save_graph_data(g, features, labels, train_idx, val_idx, test_idx, output_di
     train_mask[train_idx] = True
     val_mask[val_idx] = True
     test_mask[test_idx] = True
-    
+
+    # ✅ Hide test labels — replace with -1
+    safe_labels = labels.clone()
+    safe_labels[test_mask] = -1
+
     train_data = {
         'graph': g,
         'features': features,
-        'labels': labels,
+        'labels': safe_labels,   # ← only train+val labels visible
         'train_mask': train_mask,
         'val_mask': val_mask
     }
