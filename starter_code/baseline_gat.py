@@ -36,32 +36,49 @@ class GATModel(nn.Module):
 
 
 def load_data():
-    """
-    Loads DGL-free pkl files and rebuilds DGL graphs at runtime from edge_index.
-    This means the pkl files themselves have zero DGL dependency.
-    """
     print("Loading data...")
-    with open('../data/public/train_graph_free.pkl', 'rb') as f:
-        train_data = pickle.load(f)
-    with open('../data/public/test_graph_free.pkl', 'rb') as f:
-        test_data = pickle.load(f)
 
-    def rebuild_dgl_graph(d):
-        src, dst = d["edge_index"]
-        g = dgl.graph((src, dst), num_nodes=d["num_nodes"])
-        d["graph"] = g
-        return d
+    # ─────────────────────────────────────────────────────────────
+    # CHOOSE YOUR DATA FORMAT:
+    #   "free" → train_graph_free.pkl  (no DGL needed to load data)
+    #   "dgl"  → train_graph.pkl       (requires DGL installed)
+    DATA_FORMAT = "free"   # ← change to "dgl" if you prefer
+    # ─────────────────────────────────────────────────────────────
 
-    train_data = rebuild_dgl_graph(train_data)
-    test_data  = rebuild_dgl_graph(test_data)
+    if DATA_FORMAT == "free":
+        with open('../data/public/train_graph_free.pkl', 'rb') as f:
+            train_data = pickle.load(f)
+        with open('../data/public/test_graph_free.pkl', 'rb') as f:
+            test_data = pickle.load(f)
+
+        def rebuild_dgl_graph(d):
+            src, dst = d["edge_index"]
+            g = dgl.graph((src, dst), num_nodes=d["num_nodes"])
+            d["graph"] = g
+            return d
+
+        train_data = rebuild_dgl_graph(train_data)
+        test_data  = rebuild_dgl_graph(test_data)
+        print("  Loaded DGL-free format (rebuilt graph at runtime)")
+
+    elif DATA_FORMAT == "dgl":
+        with open('../data/public/train_graph.pkl', 'rb') as f:
+            train_data = pickle.load(f)
+        with open('../data/public/test_graph.pkl', 'rb') as f:
+            test_data = pickle.load(f)
+        print("  Loaded DGL format")
+
+    else:
+        raise ValueError(f"Unknown DATA_FORMAT '{DATA_FORMAT}'. Choose 'free' or 'dgl'.")
+
     return train_data, test_data
 
 
-def train_epoch(model, g, features, labels, train_mask, optimizer):
+def train_epoch(model, g, features, labels, train_mask, optimizer, class_weights):
     model.train()
     optimizer.zero_grad()
     logits = model(g, features)
-    loss = F.cross_entropy(logits[train_mask], labels[train_mask])
+    loss = F.cross_entropy(logits[train_mask], labels[train_mask], weight=class_weights)
     loss.backward()
     optimizer.step()
 
@@ -91,15 +108,25 @@ def main():
 
     train_data, test_data = load_data()
 
-    g        = train_data['graph']
-    features = train_data['features']
-    labels   = train_data['labels']
+    g          = train_data['graph']
+    features   = train_data['features']
+    labels     = train_data['labels']
     train_mask = train_data['train_mask']
     val_mask   = train_data['val_mask']
 
     print(f"\nDataset Statistics:")
     print(f"  Nodes: {g.num_nodes()}")
     print(f"  Edges: {g.num_edges()}")
+
+    # ✅ Fix class imbalance with weighted loss
+    train_labels = labels[train_mask]
+    num_class0 = (train_labels == 0).sum().item()
+    num_class1 = (train_labels == 1).sum().item()
+    total = num_class0 + num_class1
+    w0 = total / (2 * num_class0)
+    w1 = total / (2 * num_class1)
+    class_weights = torch.FloatTensor([w0, w1])
+    print(f"  Class weights: Healthy={w0:.2f}, Parkinson's={w1:.2f}")
 
     in_feats     = features.shape[1]
     hidden_size  = 32
@@ -122,7 +149,7 @@ def main():
     patience_counter = 0
 
     for epoch in range(num_epochs):
-        loss, train_acc = train_epoch(model, g, features, labels, train_mask, optimizer)
+        loss, train_acc = train_epoch(model, g, features, labels, train_mask, optimizer, class_weights)
         val_acc, val_f1 = evaluate(model, g, features, labels, val_mask)
 
         if (epoch + 1) % 10 == 0:
@@ -146,20 +173,24 @@ def main():
     print("\nGenerating predictions...")
     test_g        = test_data['graph']
     test_features = test_data['features']
-    test_node_ids = test_data['node_ids']
+    test_node_ids = test_data['node_ids']  # numpy array of 39 node indices
 
     model.eval()
     with torch.no_grad():
         test_logits = model(test_g, test_features)
-        _, test_predictions = torch.max(test_logits, 1)
+        # ✅ Only extract predictions for the 39 test node IDs
+        test_predictions = torch.max(test_logits[test_node_ids], 1)[1]
 
+    import os
+    os.makedirs('../submissions', exist_ok=True)
     submission = pd.DataFrame({
         'node_id':    test_node_ids,
         'prediction': test_predictions.cpu().numpy()
     })
 
     submission.to_csv('../submissions/gat_submission.csv', index=False)
-    print("Submission saved to submissions/gat_submission.csv")
+    print(f"Submission saved! {len(submission)} predictions.")
+    print(submission.head(10))
     print("\n" + "=" * 60)
 
 
